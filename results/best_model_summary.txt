@@ -1,0 +1,96 @@
+BEST MODEL SUMMARY — Vehicle Insurance Fraud Detection
+=========================================================
+
+FINAL MODEL
+------------
+HistGradientBoostingClassifier (scikit-learn), inside a single Pipeline:
+  FraudCleaner -> ColumnTransformer(winsorize+impute+Yeo-Johnson/scale for
+  numerics, impute+one-hot for categoricals) -> HistGradientBoostingClassifier
+
+Hyperparameters (defaults performed as well as or better than any tuned
+configuration tested — see model_comparison.csv):
+  max_iter=200, learning_rate=0.05, max_leaf_nodes=15,
+  l2_regularization=1.0, random_state=42
+
+PREPROCESSING APPROACH
+------------------------
+See results/preprocessing_summary.txt for full detail. In short: '*'
+placeholders and physically-invalid values converted to NaN and imputed
+in-pipeline (median / most-frequent, fit on train only); skewed numeric
+columns Yeo-Johnson transformed; all numerics winsorized at the 1st/99th
+percentile (train-fitted, no rows deleted); categoricals one-hot encoded;
+five compact ratio/date features engineered; claim_number and
+claim_day_of_week dropped.
+
+IMBALANCE STRATEGY
+--------------------
+None applied in the final model. class_weight='balanced',
+RandomUnderSampler, RandomOverSampler, SMOTENC, and SMOTENC + undersampling
+were all tested (results/model_comparison.csv, "3-imbalance/PCA" stage).
+None improved fraud PR-AUC or fraud F1 over the plain class distribution;
+several increased precision at a real cost to recall. Class imbalance is
+instead handled purely via decision-threshold selection (below).
+
+SELECTED THRESHOLD
+--------------------
+0.18 (probability of fraud), selected by maximizing fraud-class F1 on
+5-fold cross-validated out-of-fold predictions on the TRAINING split only
+(results/threshold_search.csv). The held-out test set was not used for
+threshold selection.
+
+FINAL TEST-SET METRICS (held-out 20%, n=2,399, evaluated once)
+------------------------------------------------------------------
+  Fraud Precision : 0.282
+  Fraud Recall    : 0.946
+  Fraud F1        : 0.435
+  ROC-AUC         : 0.645
+  PR-AUC (Average Precision) : 0.412
+  Overall accuracy : 0.395 (low, because the threshold is deliberately
+                       tuned toward high recall on the minority class —
+                       see caveats below)
+
+  Confusion matrix (rows=actual, cols=predicted; 0=Not Fraud, 1=Fraud):
+      [[ 389  1420]
+       [  32   558]]
+
+WHY THIS MODEL WAS SELECTED
+------------------------------
+Across all 38 model/sampling/PCA combinations tested (model_comparison.csv),
+gradient-boosted tree models (HistGradientBoosting, LightGBM,
+GradientBoosting) consistently topped the ranking on cross-validated
+fraud PR-AUC (~0.425-0.435), with the plain, untuned HistGradientBoosting
+configuration performing at least as well as every tuned variant, every
+resampling variant, and the voting/stacking ensembles built on top of it.
+Given that hyperparameter tuning, imbalance handling, and ensembling all
+failed to produce a measurable improvement, the simplest, most robust
+configuration was selected rather than a more complex one that only adds
+variance.
+
+IMPORTANT PREPROCESSING DECISIONS
+------------------------------------
+- No rows were deleted as outliers; unusual claim amounts are plausible
+  fraud signal, so numeric values were capped (winsorized), not removed.
+- PCA was evaluated and rejected: it reduced PR-AUC on both a linear and a
+  tree-based model and offered no benefit worth the loss of interpretability.
+- All preprocessing (imputation, transformation, encoding) is fit only on
+  the training data and is bundled inside the saved pipeline, so it is
+  never re-fit on the test set or on future data.
+
+HONEST LIMITATIONS (no unsupported claims)
+---------------------------------------------
+- The dataset's signal is weak and concentrated almost entirely in
+  annual_income; nearly every other column is close to uninformative on
+  its own (univariate ROC-AUC ~0.50).
+- ROC-AUC of 0.645 and PR-AUC of 0.412 (vs. a 0.246 base rate) indicate
+  modest discriminative power, not a strong fraud detector.
+- The chosen threshold (0.18) trades a large amount of precision for
+  recall: roughly 7 out of 10 claims flagged as fraud are not fraud. This
+  may or may not be an acceptable trade-off depending on the downstream
+  cost of investigating a false positive versus missing real fraud — that
+  business decision was not made here, only the threshold curve was
+  provided (results/threshold_search.csv) so a different threshold can be
+  chosen if the cost trade-off differs.
+- This model should NOT be treated as production-ready. It has not been
+  validated against a real investigative workflow, has not been checked
+  for demographic bias (e.g. its reliance on annual_income), and was
+  built and evaluated on a single static CSV extract.

@@ -1,0 +1,98 @@
+PREPROCESSING SUMMARY — Vehicle Insurance Fraud Dataset
+=========================================================
+
+Source: original_dataset.csv, 12,002 rows x 29 columns.
+
+TARGET
+------
+Column: "fraud reported" (Y/N). 8 rows had no valid label ('*' placeholder or
+blank) and were dropped, leaving 11,994 labelled rows.
+Class balance: N (not fraud) 75.4% / Y (fraud) 24.6% — moderately imbalanced.
+
+DROPPED COLUMNS
+----------------
+- claim_number: unique row identifier, no predictive value.
+- claim_day_of_week: redundant, derivable from claim_date; the parsed
+  claim_weekday feature is used instead so the messy '*' entries in this
+  column don't need separate handling.
+
+MISSING / INVALID VALUE TREATMENT
+----------------------------------
+- '*' placeholders (found in marital_status, claim_date, claim_day_of_week,
+  witness_present, age_of_vehicle, injury_claim) were converted to NaN.
+- age_of_driver outside a plausible 16-100 range (5 rows, values up to 278)
+  set to NaN rather than dropped.
+- annual_income <= 0 (8 rows, all -1.6) set to NaN.
+- Numeric imputation: median (fit on training data only).
+- Categorical / binary imputation: most-frequent (fit on training data only).
+All imputation happens INSIDE the saved sklearn Pipeline, so it is refit
+correctly for every cross-validation fold and for the final train/test split,
+avoiding leakage. This is why the saved preprocessed_vehicle_insurance_fraud.csv
+still contains some NaNs: it reflects cleaning + feature engineering only, not
+imputation.
+
+CATEGORICAL ENCODING
+---------------------
+One-hot encoding (handle_unknown='ignore') applied to: gender, property_status,
+accident_site, channel, vehicle_category, vehicle_color, zip_region, claim_month,
+claim_weekday, claim_year.
+Low-cardinality binary/ordinal fields (high_education, address_change,
+police_report, marital_status, witness_present) were coerced to numeric 0/1
+and imputed rather than one-hot encoded, since they are already binary flags.
+
+NUMERICAL TRANSFORMATION
+--------------------------
+Skewness was measured per numeric column (see notebook). Columns with
+|skew| roughly > 1 (annual_income, past_num_of_claims, total_claim,
+vehicle_price, injury_claim, policy deductible, and the engineered ratio
+features claim_to_price, injury_share, claim_to_income, premium_to_income,
+claim_to_deductible) were passed through a Yeo-Johnson power transform +
+standardisation. The remaining, roughly-symmetric numeric columns were
+standardised only (no power transform). Yeo-Johnson was chosen over
+Box-Cox because several columns/ratios are near zero or would be zero/negative
+in some rows.
+
+OUTLIERS
+--------
+Numeric columns are winsorised (clipped) at the 1st/99th percentiles fitted
+on the training data only. No rows were deleted for being statistical
+outliers — unusually large claims are plausible fraud signal, not noise,
+so deletion was avoided in favor of capping extreme values.
+
+FEATURE ENGINEERING
+---------------------
+From claim_date: claim_month, claim_weekday, claim_year (parse failures ->
+NaN, imputed downstream).
+From zip_code: zip_region = zip_code // 10000 (coarse region bucket; the
+raw 5-digit zip was dropped as too high-cardinality to encode safely).
+Ratio features: claim_to_price (total_claim / vehicle_price),
+injury_share (injury_claim / total_claim), claim_to_income
+(total_claim / annual_income), premium_to_income (annual premium /
+annual_income), claim_to_deductible (total_claim / policy deductible).
+These were chosen because they capture claim severity relative to the
+policyholder's means and the vehicle/policy, which is a standard fraud
+signal category, rather than adding dozens of unrelated interaction terms.
+
+PCA
+---
+Evaluated at 95% explained variance on both a linear model (logistic
+regression) and a tree ensemble (HistGradientBoosting). In both cases PCA
+reduced PR-AUC (0.420 vs 0.435 without PCA for the best model) and lost
+interpretability, so it was NOT used in the final pipeline.
+
+IMBALANCE HANDLING
+--------------------
+class_weight='balanced', RandomUnderSampler, RandomOverSampler, SMOTENC and
+SMOTENC+RandomUnderSampler were all evaluated (see model_comparison.csv).
+None improved fraud PR-AUC or F1 over doing nothing; every resampling
+strategy shifted the precision/recall balance without net benefit, so the
+final model uses the raw class distribution with a chosen decision
+threshold rather than resampling.
+
+MOST INFORMATIVE SIGNAL
+--------------------------
+annual_income was by far the strongest single predictor (univariate ROC-AUC
+0.36, i.e. informative but inverted / non-monotonic): fraud rate is ~90-100%
+for incomes below ~$40k, ~25% in the $40k-$70k range, and under 5% above
+$80k. Most other individual columns carried very little signal
+(univariate ROC-AUC close to 0.50).
